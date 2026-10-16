@@ -1,0 +1,2 @@
+"""Course deadline alert service."""
+
