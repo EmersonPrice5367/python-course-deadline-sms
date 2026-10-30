@@ -1,12 +1,12 @@
 # Send the right course deadline alert
 
-This repo came out of a postmortem on a weekend edtech side project where course delivery, deadlines, and educator reports had diverged into three code paths. First cut was three hours: one eligibility policy, one SMS send boundary, and the returned message ID as the educator receipt.
+This came out of a weekend edtech build where course delivery, learner deadlines, and educator reporting had drifted into three separate code paths. First version took about three hours: one policy decides contact, one SMS boundary sends, and the returned message ID becomes the educator's receipt.
 
-Infrai puts delivery behind one API and a single `INFRAI_API_KEY`, so swapping a Twilio or Aliyun adapter won't leak provider specifics into course logic. It's a plain HTTP call; no SMS SDK to install.
+Infrai keeps delivery behind one API and a single`INFRAI_API_KEY`, so swapping a Twilio or Aliyun SMS adapter doesn't leak provider details into course rules. The request is plain HTTP; no SMS SDK to install.
 
 ## Run the shipping path
 
-Provision Python 3.11+ and install the service plus test deps as shown:
+Use Python 3.11 or newer, then install the service and test dependencies:
 
 ```bash
 python -m venv .venv
@@ -17,15 +17,15 @@ export DEMO_LEARNER_PHONE=+15551234567
 python scripts/send_sample_alert.py
 ```
 
-The harness sets up a live `PY-201` course, an active learner, and a deadline 12h out. We assert a JSON educator report containing `outcome: "sent"`, course code, alert ID, and the `message_id` from delivery. Phone number is excluded from that report by design.
+The script models a live`PY-201`course, an active learner, and a deadline 12 hours away. Expected output is a JSON educator report with`outcome: "sent"`, the course code, alert ID, and the`message_id`returned by delivery. The learner phone is deliberately absent from that report.
 
-To bring up the app entrypoint, start the API:
+For the application-shaped entry point, start the API:
 
 ```bash
 uvicorn course_alerts.service:service --reload
 ```
 
-Then POST a typed deadline record to the local route:
+Send a typed deadline record to the local route:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/deadline-alerts \
@@ -35,33 +35,33 @@ curl -X POST http://127.0.0.1:8000/deadline-alerts \
 
 ## The decision I keep in the backend
 
-`evaluate_deadline_alert` sends only if course is live, learner active, deadline inside next 24h. Anything else yields a `skipped` report and skips the sender entirely. SMS body carries course code and deadline; educator report gets delivery message ID, no phone.
+`evaluate_deadline_alert`sends only when the course is live, the learner is active, and the deadline falls in the next 24 hours. Every other input returns a`skipped`report without calling the sender. The SMS carries course code and deadline; the educator report carries delivery message ID and no phone number.
 
-In the delivery boundary we make an explicit `POST /v1/sms/send`, then parse the `{ok, data, error, metadata}` envelope before trusting HTTP status, and push business rejections up to FastAPI. Retries are guarded by a stable key from `alert_id` to keep them idempotent. In a Go worker you'd wrap that in a sync.Once, but the Python path is fine. On 429 we honor `Retry-After` and back off exponentially otherwise.
+The delivery boundary makes an explicit`POST /v1/sms/send`, reads the`{ok, data, error, metadata}`envelope before interpreting HTTP status, and surfaces business rejections to the FastAPI route. A stable key derived from`alert_id`protects write retries. Rate-limited responses honor`Retry-After`and otherwise wait with exponential backoff.
 
-Run the deterministic check:
+Run the deterministic business check with:
 
 ```bash
 pytest
 ```
 
-The test drives an active learner with 12h left. Asserts one send, `outcome == "sent"`, `message_id == "msg_0042"`, and stable key `course-deadline:alert-0042`. A second case confirms a completed learner yields `learner_not_active` and no delivery call. In prod we'd page if that send count drifts.
+The focused test inputs an active learner with 12 hours remaining. It expects one send,`outcome == "sent"`,`message_id == "msg_0042"`, and the stable request key`course-deadline:alert-0042`. A second case proves a completed learner produces`learner_not_active`without a delivery call.
 
 ## Moving traffic and moving it back
 
-Cut over just this boundary; don't rewrite the deadline cron in the same change. Runbook:
+I'd cut over this small boundary instead of rewriting the deadline job at the same time. Runbook-style:
 
-1. Export `INFRAI_API_KEY` in staging and run `pytest`.
-2. Send one staging deadline via script, verify its message ID lands in educator log.
-3. Deploy FastAPI service, shift a small slice of the deadline worker to `/deadline-alerts`.
-4. Diff sent/skipped educator reports vs incumbent before full cutover.
-5. Retire old SMS creds only after retention window elapses.
+1. Export`INFRAI_API_KEY`in staging and run`pytest`.
+2. Send one staging deadline through the script and confirm its message ID reaches the educator log.
+3. Deploy the FastAPI service, then point a small slice of the existing deadline worker at`/deadline-alerts`.
+4. Compare sent and skipped educator reports with the incumbent path before moving remaining traffic.
+5. Remove the old SMS credential only after the normal retention window has passed.
 
-Rollback is symmetric: repoint worker to incumbent adapter, stop sending to this service. Course, learner, deadline data remain in edtech backend, so no conversion needed. Duplicate delivery risk stays low because the key is stable.
+Rollback is equally narrow: point the deadline worker back to the incumbent adapter and stop routing to this service. Course state, learner state, and deadline records stay in the edtech backend, so no domain data needs conversion.
 
 ## Scope
 
-Repo scope: deadline eligibility, SMS delivery, educator result. Upstream backend keeps scheduling evaluations, storing reports, and managing learner comms preferences. Keep it that way.
+This repo owns deadline eligibility, SMS delivery, and the educator-facing result. The surrounding backend still schedules evaluations, stores reports, and controls learner communication preferences.
 
 ## License
 
